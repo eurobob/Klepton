@@ -1541,12 +1541,14 @@ static void klfb_LinkProgram(uint32_t program) {
     // KL_GLFB_DUMP_PROGRAM=N: print the sources that were linked into program
     // N. The timeline names programs by number ("the frame's last draw is
     // program 7"); this turns the number into the shader text.
+    // KL_GLFB_DUMP_PROGRAM=all prints every program as it links, for when the
+    // number is not known yet (finding the one shader that draws the text).
     static int dump_prog = -2;
     if (dump_prog == -2) {
         const char *d = kl_env_str("KL_GLFB_DUMP_PROGRAM", NULL);
-        dump_prog = d ? atoi(d) : -1;
+        dump_prog = !d ? -1 : (strcmp(d, "all") == 0 ? -3 : atoi(d));
     }
-    if (dump_prog >= 0 && (int)program == dump_prog) {
+    if (dump_prog == -3 || (dump_prog >= 0 && (int)program == dump_prog)) {
         static void (*r_GetAttachedShaders)(uint32_t, int32_t, int32_t *,
                                             uint32_t *);
         if (!r_GetAttachedShaders)
