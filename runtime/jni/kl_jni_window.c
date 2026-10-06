@@ -405,6 +405,25 @@ static klj_val klj_View_setOnApplyWindowInsetsListener(void *env, void *self,
     return (klj_val){.l = NULL};
 }
 
+// Same reasoning as the insets listener above: the listener fires when the view's
+// bounds CHANGE, and the immersive surface keeps one size for the life of the
+// process. Unity 2019.3.2f1 (Beat Saber 1.11.1) registers it from its decor-view
+// setup; no other guest in the target table has asked for it.
+static klj_val klj_View_addOnLayoutChangeListener(void *env, void *self,
+                                                  const klj_val *a, int n) {
+    (void)env; (void)self; (void)a; (void)n;
+    KLJ_LOG("View.addOnLayoutChangeListener() — recorded; the layout never changes, "
+            "so it is never called back");
+    return (klj_val){.l = NULL};
+}
+
+static klj_val klj_View_removeOnLayoutChangeListener(void *env, void *self,
+                                                     const klj_val *a, int n) {
+    (void)env; (void)self; (void)a; (void)n;
+    KLJ_LOG("View.removeOnLayoutChangeListener() — nothing to remove");
+    return (klj_val){.l = NULL};
+}
+
 // Null is what Android itself returns when the display has no cutout, and this
 // display has none -- there is no notch in a headset. It is the same answer a
 // Quest gives, so Unity takes the branch it takes on the real device.
@@ -832,6 +851,8 @@ const klj_binding klj_bind_window[] = {
     {"android/view/View", "getRootWindowInsets", "()Landroid/view/WindowInsets;", klj_View_getRootWindowInsets},
     {"android/view/View", "onApplyWindowInsets", "(Landroid/view/WindowInsets;)Landroid/view/WindowInsets;", klj_View_onApplyWindowInsets},
     {"android/view/View", "setOnApplyWindowInsetsListener", "(Landroid/view/View$OnApplyWindowInsetsListener;)V", klj_View_setOnApplyWindowInsetsListener},
+    {"android/view/View", "addOnLayoutChangeListener", "(Landroid/view/View$OnLayoutChangeListener;)V", klj_View_addOnLayoutChangeListener},
+    {"android/view/View", "removeOnLayoutChangeListener", "(Landroid/view/View$OnLayoutChangeListener;)V", klj_View_removeOnLayoutChangeListener},
     {"android/view/WindowInsets", "getDisplayCutout", "()Landroid/view/DisplayCutout;", klj_WindowInsets_getDisplayCutout},
     {"android/content/pm/PackageManager", "hasSystemFeature", "(Ljava/lang/String;)Z", klj_PackageManager_hasSystemFeature},
     {"android/content/Context", "checkCallingOrSelfPermission", "(Ljava/lang/String;)I", klj_Context_checkPermission},
