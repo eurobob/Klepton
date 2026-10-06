@@ -16,7 +16,7 @@ CFLAGS  := -g -O1 -Wall -Wextra -Wno-unused-parameter -arch arm64 $(MVK_INC) $(R
 # VideoToolbox/CoreMedia/CoreVideo are the video decoder (kl_vtdec.c), and they
 # are in the base LDLIBS rather than on one target because kl_vtdec is in
 # RUNTIME_SHIP — everything that links the runtime needs them.
-LDLIBS  := -lz -framework AudioToolbox \
+LDLIBS  := -lz -framework AudioToolbox -framework CoreAudio \
            -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework IOSurface \
            -framework CoreFoundation -framework AVFoundation -framework Foundation
 # The host/ship split is a source-list boundary, not a runtime getenv.
@@ -803,14 +803,14 @@ build/xrsim/libklepton.a: $(RUNTIME_SHIP) $(RUNTIME_ALL_HDRS)
 # a function nothing calls yet.
 build/xros/libklepton.dylib: build/xros/libklepton.a
 	@$(CC) -target arm64-apple-xros1.0 -isysroot $(XROS_SDK) -arch arm64 \
-	   -dynamiclib -o $@ -Wl,-all_load $< -lz -framework AudioToolbox \
+	   -dynamiclib -o $@ -Wl,-all_load $< -lz -framework AudioToolbox -framework CoreAudio \
 	   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework IOSurface \
 	   -framework CoreFoundation -framework AVFoundation -framework Foundation \
 	   -install_name @rpath/libklepton.dylib
 
 build/xrsim/libklepton.dylib: build/xrsim/libklepton.a
 	@$(CC) -target arm64-apple-xros1.0-simulator -isysroot $(XRSIM_SDK) -arch arm64 \
-	   -dynamiclib -o $@ -Wl,-all_load $< -lz -framework AudioToolbox \
+	   -dynamiclib -o $@ -Wl,-all_load $< -lz -framework AudioToolbox -framework CoreAudio \
 	   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework IOSurface \
 	   -framework CoreFoundation -framework AVFoundation -framework Foundation \
 	   -install_name @rpath/libklepton.dylib
@@ -862,7 +862,7 @@ build/Klepton.xcframework: $(XROS_LIBS) $(RUNTIME_ALL_HDRS) build/.xcframework-s
 .PHONY: angle-ios angle-ios-sim angle-xros
 angle-ios: angle-fetch
 	cd vendor && export PATH="$$PWD/depot_tools:$$PATH" DEPOT_TOOLS_UPDATE=0 && \
-	  gn gen out/ios --args='is_debug=false target_os="ios" target_cpu="arm64" \
+	  gn gen out/ios --args='is_debug=false target_os="ios" target_cpu="arm64" use_lld=false \
 	    target_environment="device" ios_enable_code_signing=false \
 	    angle_enable_vulkan=false angle_enable_swiftshader=false' && \
 	  autoninja -C out/ios libEGL libGLESv2
@@ -874,7 +874,7 @@ angle-ios: angle-fetch
 # a missing slice.
 angle-ios-sim: angle-fetch
 	cd vendor && export PATH="$$PWD/depot_tools:$$PATH" DEPOT_TOOLS_UPDATE=0 && \
-	  gn gen out/ios-sim --args='is_debug=false target_os="ios" target_cpu="arm64" \
+	  gn gen out/ios-sim --args='is_debug=false target_os="ios" target_cpu="arm64" use_lld=false \
 	    target_environment="simulator" ios_enable_code_signing=false \
 	    angle_enable_vulkan=false angle_enable_swiftshader=false' && \
 	  autoninja -C out/ios-sim libEGL libGLESv2
@@ -993,7 +993,7 @@ ovrpabi:
 .PHONY: angle-debug
 angle-debug: angle-fetch
 	cd vendor && export PATH="$$PWD/depot_tools:$$PATH" DEPOT_TOOLS_UPDATE=0 && \
-	  gn gen out/Debug --args='is_debug=true target_cpu="arm64"' && \
+	  gn gen out/Debug --args='is_debug=true target_cpu="arm64" use_lld=false' && \
 	  autoninja -C out/Debug libEGL libGLESv2
 
 # ---- vendor/ — the ANGLE checkout, which we MODIFY ----
