@@ -1566,14 +1566,19 @@ final class KleptonControllers {
     /// - thumbDown: the thumb tip is within 3.5 cm of the index finger's middle
     ///   joint, which is where a thumb lies when it is not raised — the thumb
     ///   rest's job on a controller.
+    ///
+    /// Joint positions are used whether or not ARKit marks the joint tracked.
+    /// A fist hides the fingertips from the cameras, ARKit then marks them
+    /// untracked while it still estimates them, and requiring `isTracked`
+    /// made the grip read 0 exactly when the hand closed (device log
+    /// 2026-10-07: `grip 0.00` on every input transition).
     private func handShape(_ anchor: HandAnchor) -> (grip: Float, indexCurl: Float, thumbDown: Bool)? {
         guard let sk = anchor.handSkeleton else { return nil }
         let o = anchor.originFromAnchorTransform
         func at(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
-            let joint = sk.joint(name)
-            guard joint.isTracked else { return nil }
-            let c = (o * joint.anchorFromJointTransform).columns.3
-            return SIMD3(c.x, c.y, c.z)
+            let c = (o * sk.joint(name).anchorFromJointTransform).columns.3
+            let v = SIMD3(c.x, c.y, c.z)
+            return (v.x.isFinite && v.y.isFinite && v.z.isFinite) ? v : nil
         }
         func curl(_ base: HandSkeleton.JointName, _ knuckle: HandSkeleton.JointName,
                   _ tip: HandSkeleton.JointName) -> Float? {
@@ -1599,6 +1604,12 @@ final class KleptonControllers {
     /// The grip bit's hysteresis, like the pinch's: a fist that wavers around
     /// one threshold would drop what it holds.
     private var gripHeld = [false, false]
+    /// For the pinch trace: the highest grip and index curl seen, the frames
+    /// with the thumb down, and the frames with no hand shape at all.
+    private var gripPeak: [Float] = [0, 0]
+    private var curlPeak: [Float] = [0, 0]
+    private var thumbDownFrames = [0, 0]
+    private var shapeMissing = [0, 0]
 
     /// The distance that reads as a fully released trigger. KL_PINCH_OPEN.
     private static let pinchOpen: Float = envMetres("KL_PINCH_OPEN", 0.05)
@@ -1678,6 +1689,11 @@ final class KleptonControllers {
         NSLog("[cp] pinch: L \(fmt(0)) | R \(fmt(1)) "
               + String(format: "(open %.3f closed %.3f, %d spatial events, %d unattributed)",
                        Self.pinchOpen, Self.pinchClosed, spatialEvents, spatialNoChirality))
+        NSLog("[cp] hand shape: " + (0...1).map { h in
+            String(format: "%@ grip peak %.2f, index curl peak %.2f, thumb down %d frames, no shape %d",
+                   h == 0 ? "L" : "R", gripPeak[h], curlPeak[h], thumbDownFrames[h], shapeMissing[h])
+        }.joined(separator: " | "))
+        gripPeak = [0, 0]; curlPeak = [0, 0]; thumbDownFrames = [0, 0]; shapeMissing = [0, 0]
         pinchMin = [9, 9]; pinchPeak = [0, 0]
         pinchFires = [0, 0]; pinchNoSkeleton = [0, 0]
         pinchFromSystem = [0, 0]; pinchFromDistance = [0, 0]
@@ -1817,6 +1833,9 @@ final class KleptonControllers {
                 // poses, so the guest can grab and its hand model follows the
                 // real one.
                 if let shape = handShape(anchor) {
+                    gripPeak[hand] = max(gripPeak[hand], shape.grip)
+                    curlPeak[hand] = max(curlPeak[hand], shape.indexCurl)
+                    if shape.thumbDown { thumbDownFrames[hand] += 1 }
                     st.handTrigger = shape.grip
                     let gripPressed = gripHeld[hand] ? (shape.grip > 0.35) : (shape.grip > 0.6)
                     gripHeld[hand] = gripPressed
@@ -1831,6 +1850,7 @@ final class KleptonControllers {
                     }
                 } else {
                     gripHeld[hand] = false
+                    shapeMissing[hand] += 1
                 }
             } else {
                 // Nothing tracked this hand. Leave kl_ovrp's own synthesised
