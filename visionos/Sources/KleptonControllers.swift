@@ -105,6 +105,19 @@ enum OVRPRawButton {
     static let lHandTrigger: UInt32   = 0x2000_0000   // (v)
 }
 
+/// `ovrpTouch` **raw** bits (`OVRInput.RawTouch`). A different layout from the
+/// buttons above: the touch word the runtime hands the guest takes these
+/// values as they are (`kl_ovrp_set_controller_input`), so a button bit ORed
+/// into it lands on some other sensor or on none. A Touch controller's hand
+/// model reads them: a thumb not on the rest is drawn lifted, an index not on
+/// the trigger is drawn pointing.
+enum OVRPRawTouch {
+    static let rThumbRest: UInt32    = 0x0000_0008
+    static let rIndexTrigger: UInt32 = 0x0000_0010
+    static let lThumbRest: UInt32    = 0x0000_0800
+    static let lIndexTrigger: UInt32 = 0x0000_1000
+}
+
 /// The wrist frame ARKit reports, expressed in the grip frame the guest wants.
 ///
 /// **These are not the same basis, and nothing above this line converts them.**
@@ -1540,6 +1553,53 @@ final class KleptonControllers {
         return t
     }
 
+    /// The rest of the hand, as a Touch controller would report it. Without
+    /// this a tracked hand only ever pinched: the grip axis stayed 0, so
+    /// nothing could be grabbed, and no touch sensor was set, so a guest's hand
+    /// model drew an open hand with a pointing finger whatever the real one did.
+    ///
+    /// - grip: how far the middle, ring and little fingers fold into the palm,
+    ///   averaged — 0 straight, 1 a fist (the angle between each metacarpal and
+    ///   the line from its knuckle to the fingertip; the same measure MacVR
+    ///   Player uses for its emulated controllers).
+    /// - indexCurl: the same measure for the index finger.
+    /// - thumbDown: the thumb tip is within 3.5 cm of the index finger's middle
+    ///   joint, which is where a thumb lies when it is not raised — the thumb
+    ///   rest's job on a controller.
+    private func handShape(_ anchor: HandAnchor) -> (grip: Float, indexCurl: Float, thumbDown: Bool)? {
+        guard let sk = anchor.handSkeleton else { return nil }
+        let o = anchor.originFromAnchorTransform
+        func at(_ name: HandSkeleton.JointName) -> SIMD3<Float>? {
+            let joint = sk.joint(name)
+            guard joint.isTracked else { return nil }
+            let c = (o * joint.anchorFromJointTransform).columns.3
+            return SIMD3(c.x, c.y, c.z)
+        }
+        func curl(_ base: HandSkeleton.JointName, _ knuckle: HandSkeleton.JointName,
+                  _ tip: HandSkeleton.JointName) -> Float? {
+            guard let a = at(base), let b = at(knuckle), let c = at(tip) else { return nil }
+            let bone = b - a, finger = c - b
+            guard simd_length(bone) > 1e-4, simd_length(finger) > 1e-4 else { return nil }
+            let cosine = simd_dot(simd_normalize(bone), simd_normalize(finger))
+            return max(0, min(1, (0.8 - cosine) / 1.3))
+        }
+        let folded = [curl(.middleFingerMetacarpal, .middleFingerKnuckle, .middleFingerTip),
+                      curl(.ringFingerMetacarpal, .ringFingerKnuckle, .ringFingerTip),
+                      curl(.littleFingerMetacarpal, .littleFingerKnuckle, .littleFingerTip)].compactMap { $0 }
+        guard !folded.isEmpty else { return nil }
+        let grip = folded.reduce(0, +) / Float(folded.count)
+        let indexCurl = curl(.indexFingerMetacarpal, .indexFingerKnuckle, .indexFingerTip) ?? 0
+        var thumbDown = false
+        if let thumb = at(.thumbTip), let side = at(.indexFingerIntermediateBase) {
+            thumbDown = simd_distance(thumb, side) < 0.035
+        }
+        return (grip, indexCurl, thumbDown)
+    }
+
+    /// The grip bit's hysteresis, like the pinch's: a fist that wavers around
+    /// one threshold would drop what it holds.
+    private var gripHeld = [false, false]
+
     /// The distance that reads as a fully released trigger. KL_PINCH_OPEN.
     private static let pinchOpen: Float = envMetres("KL_PINCH_OPEN", 0.05)
     /// ...and the one that reads as fully pressed. KL_PINCH_CLOSED. Kept below
@@ -1746,11 +1806,31 @@ final class KleptonControllers {
                 // with the bit.
                 st.indexTrigger = pressed ? 1 : t
                 pinchHeld[hand] = pressed
+                let indexTouch = hand == 0 ? OVRPRawTouch.lIndexTrigger : OVRPRawTouch.rIndexTrigger
                 if pressed {
                     pinchFires[hand] += 1
-                    let bit = hand == 0 ? OVRPRawButton.lIndexTrigger
-                                        : OVRPRawButton.rIndexTrigger
-                    st.buttons |= bit; st.touches |= bit
+                    st.buttons |= hand == 0 ? OVRPRawButton.lIndexTrigger : OVRPRawButton.rIndexTrigger
+                    st.touches |= indexTouch
+                }
+
+                // Grip from a fist, and the touch sensors from the finger
+                // poses, so the guest can grab and its hand model follows the
+                // real one.
+                if let shape = handShape(anchor) {
+                    st.handTrigger = shape.grip
+                    let gripPressed = gripHeld[hand] ? (shape.grip > 0.35) : (shape.grip > 0.6)
+                    gripHeld[hand] = gripPressed
+                    if gripPressed {
+                        st.buttons |= hand == 0 ? OVRPRawButton.lHandTrigger : OVRPRawButton.rHandTrigger
+                    }
+                    if shape.thumbDown || gripPressed {
+                        st.touches |= hand == 0 ? OVRPRawTouch.lThumbRest : OVRPRawTouch.rThumbRest
+                    }
+                    if shape.indexCurl > 0.25 || t > 0.1 {
+                        st.touches |= indexTouch
+                    }
+                } else {
+                    gripHeld[hand] = false
                 }
             } else {
                 // Nothing tracked this hand. Leave kl_ovrp's own synthesised
