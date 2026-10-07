@@ -24,17 +24,22 @@ struct KLChromaSettings: Codable, Equatable {
     var distMin: Float = 0.35
     var distMax: Float = 0.7
     /// Whether the system mattes the user's own hands and arms OVER the guest's
-    /// picture. On by default, which is what visionOS does in `.mixed` and what
-    /// a person reaching for a real object wants; off is what a guest that
-    /// draws its own hands wants, because two pairs of hands in one place is
-    /// worse than either alone.
-    var handMatting = true
+    /// picture. Off by default in this fork: every guest here is a VR game that
+    /// draws its own hands, and two pairs of hands in one place is worse than
+    /// either alone (SUPERHOT playtest, 2026-10-07). On is what visionOS does in
+    /// `.mixed` and what a person reaching for a real object wants.
+    var handMatting = false
+    /// The saved blob's format. Version 1 (no field) is every blob written
+    /// before the default above changed; it saved `handMatting = true` at the
+    /// first launch whether or not anyone chose it, so it is migrated to the new
+    /// default once. From version 2 on, the saved value is the user's choice.
+    var formatVersion = 2
 
     /// SIMD3 is not Codable, so the colour rides as three keyed floats. Spelled
     /// out rather than reached for a wrapper: this is the file format, and a
     /// format that is legible in the JSON is one a person can fix by hand.
     private enum CodingKeys: String, CodingKey {
-        case enabled, distMin, distMax, handMatting
+        case enabled, distMin, distMax, handMatting, formatVersion
         case colorR, colorG, colorB
     }
 
@@ -50,6 +55,11 @@ struct KLChromaSettings: Codable, Equatable {
         distMin     = try c.decodeIfPresent(Float.self, forKey: .distMin)     ?? distMin
         distMax     = try c.decodeIfPresent(Float.self, forKey: .distMax)     ?? distMax
         handMatting = try c.decodeIfPresent(Bool.self,  forKey: .handMatting) ?? handMatting
+        formatVersion = try c.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
+        if formatVersion < 2 {
+            handMatting = false
+            formatVersion = 2
+        }
         color = SIMD3<Float>(try c.decodeIfPresent(Float.self, forKey: .colorR) ?? color.x,
                              try c.decodeIfPresent(Float.self, forKey: .colorG) ?? color.y,
                              try c.decodeIfPresent(Float.self, forKey: .colorB) ?? color.z)
@@ -61,6 +71,7 @@ struct KLChromaSettings: Codable, Equatable {
         try c.encode(distMin,     forKey: .distMin)
         try c.encode(distMax,     forKey: .distMax)
         try c.encode(handMatting, forKey: .handMatting)
+        try c.encode(formatVersion, forKey: .formatVersion)
         try c.encode(color.x, forKey: .colorR)
         try c.encode(color.y, forKey: .colorG)
         try c.encode(color.z, forKey: .colorB)

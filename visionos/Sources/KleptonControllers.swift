@@ -1601,6 +1601,41 @@ final class KleptonControllers {
         return (grip, indexCurl, thumbDown)
     }
 
+    /// The velocity of a tracked hand's grip pose, from consecutive poses.
+    ///
+    /// A `HandAnchor` carries no motion, so a tracked hand used to report zero
+    /// velocity, and a guest that judges a hit by speed never saw one (SUPERHOT's
+    /// tutorial punch did not register, 2026-10-07). The poses are ARKit's own
+    /// prediction to each presentation time, so their difference over the frame
+    /// interval is the hand's motion. Its noise is ARKit's few millimetres of
+    /// jitter over 11 ms, 0.2-0.5 m/s; half-and-half smoothing per frame keeps a
+    /// punch (2-5 m/s) far above it. The history restarts after a gap of more than
+    /// 50 ms, so a hand that reappears elsewhere is not read as a flight.
+    /// Angular velocity is in the tracking frame (q_now = dq * q_prev), like the
+    /// Sense controllers' after their rotation.
+    private var motionPrev: [(p: SIMD3<Float>, q: simd_quatf, t: TimeInterval)?] = [nil, nil]
+    private var motionLinear: [SIMD3<Float>] = [.zero, .zero]
+    private var motionAngular: [SIMD3<Float>] = [.zero, .zero]
+    private func handVelocity(hand: Int, position p: SIMD3<Float>, orientation q: simd_quatf,
+                              at t: TimeInterval) -> (SIMD3<Float>, SIMD3<Float>) {
+        defer { motionPrev[hand] = (p, q, t) }
+        guard let prev = motionPrev[hand], t - prev.t > 0.001, t - prev.t < 0.05 else {
+            motionLinear[hand] = .zero
+            motionAngular[hand] = .zero
+            return (.zero, .zero)
+        }
+        let dt = Float(t - prev.t)
+        let linear = (p - prev.p) / dt
+        var dq = simd_normalize(q * prev.q.inverse)
+        if dq.real < 0 { dq = simd_quatf(vector: -dq.vector) }
+        var angular = SIMD3<Float>.zero
+        let length = simd_length(dq.imag)
+        if length > 1e-6 { angular = dq.imag / length * (2 * atan2(length, dq.real) / dt) }
+        motionLinear[hand] = motionLinear[hand] * 0.5 + linear * 0.5
+        motionAngular[hand] = motionAngular[hand] * 0.5 + angular * 0.5
+        return (motionLinear[hand], motionAngular[hand])
+    }
+
     /// The grip bit's hysteresis, like the pinch's: a fist that wavers around
     /// one threshold would drop what it holds.
     private var gripHeld = [false, false]
@@ -1785,6 +1820,8 @@ final class KleptonControllers {
             } else if let anchor = (hand == 0 ? leftHand : rightHand) {
                 let (p, q) = gripPose(anchor, hand: hand)
                 st.position = p; st.orientation = q
+                (st.linearVelocity, st.angularVelocity) =
+                    handVelocity(hand: hand, position: p, orientation: q, at: presentationTime)
                 // pollButtons() has already cleared this hand's bits (no Sense
                 // controller wrote it), so everything the pinch sets is set
                 // here and nothing has to be undone.
@@ -1853,6 +1890,7 @@ final class KleptonControllers {
                     shapeMissing[hand] += 1
                 }
             } else {
+                motionPrev[hand] = nil   // the next tracked pose starts a new history
                 // Nothing tracked this hand. Leave kl_ovrp's own synthesised
                 // head-relative hand alone rather than pushing a stale pose —
                 // it at least keeps the controllers inside the frustum.
