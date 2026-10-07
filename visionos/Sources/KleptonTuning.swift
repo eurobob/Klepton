@@ -25,6 +25,15 @@ struct KLTune: Equatable {
     var aimPitch:  Float = 0
     var gripPivot  = SIMD3<Float>(0, 0, 0)
     var gripPos    = SIMD3<Float>(0, 0, 0)
+    /// Tracked hands on an Oculus SDK guest (KL_HAND_ROT / KL_HAND_POS): an
+    /// extra rotation (degrees, X then Y then Z, in the grip's own frame) and
+    /// offset (metres, grip frame) for the RIGHT hand. The left hand mirrors
+    /// them: the grip frames of mirrored hands differ by D = diag(-1, 1, 1), so
+    /// the offset's X and the rotations about Y and Z change sign.
+    /// Saved per app (each guest is its own app), because the residual is the
+    /// guest's own hand-model transform and differs per title.
+    var handRot    = SIMD3<Float>(0, 0, 0)
+    var handPos    = SIMD3<Float>(0, 0, -0.04)
 }
 
 final class KleptonTuning: ObservableObject {
@@ -57,6 +66,15 @@ final class KleptonTuning: ObservableObject {
         t.aimPitch  = ap
         t.gripPivot = SIMD3<Float>(pivot[0], pivot[1], pivot[2])
         t.gripPos   = SIMD3<Float>(pos[0], pos[1], pos[2])
+        // The hand set: the environment wins, then what the panel saved for
+        // this guest, then the defaults (the same order as the matting settings).
+        if let saved = UserDefaults.standard.array(forKey: Self.handKey) as? [Float], saved.count == 6 {
+            t.handRot = SIMD3(saved[0], saved[1], saved[2])
+            t.handPos = SIMD3(saved[3], saved[4], saved[5])
+            NSLog("[tune] hand set restored: rot \(t.handRot) deg, pos \(t.handPos) m")
+        }
+        if let v = Self.envTriple("KL_HAND_ROT") { t.handRot = v }
+        if let v = Self.envTriple("KL_HAND_POS") { t.handPos = v }
         ui = t
         live = t
     }
@@ -67,8 +85,18 @@ final class KleptonTuning: ObservableObject {
         return live
     }
 
+    private static let handKey = "klepton.handTune"
+
+    private static func envTriple(_ key: String) -> SIMD3<Float>? {
+        guard let text = ProcessInfo.processInfo.environment[key] else { return nil }
+        let f = text.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+        return f.count == 3 ? SIMD3(f[0], f[1], f[2]) : nil
+    }
+
     private func publish() {
         lock.lock(); live = ui; lock.unlock()
+        UserDefaults.standard.set([ui.handRot.x, ui.handRot.y, ui.handRot.z,
+                                   ui.handPos.x, ui.handPos.y, ui.handPos.z], forKey: Self.handKey)
         var pivot = [ui.gripPivot.x, ui.gripPivot.y, ui.gripPivot.z]
         var pos   = [ui.gripPos.x,   ui.gripPos.y,   ui.gripPos.z]
         kl_openxr_set_grip_tune(ui.gripPitch, ui.aimPitch, &pivot, &pos)
@@ -88,7 +116,9 @@ final class KleptonTuning: ObservableObject {
         KL_XR_GRIP_PITCH=\(String(format: "%.3f", ui.gripPitch)) \
         KL_XR_AIM_PITCH=\(String(format: "%.3f", ui.aimPitch)) \
         KL_XR_GRIP_PIVOT="\(v(ui.gripPivot))" \
-        KL_XR_GRIP_POS="\(v(ui.gripPos))"
+        KL_XR_GRIP_POS="\(v(ui.gripPos))" \
+        KL_HAND_ROT="\(v(ui.handRot))" \
+        KL_HAND_POS="\(v(ui.handPos))"
         """
     }
 }
@@ -116,6 +146,15 @@ struct TuningView: View {
                 deg("OpenXR aim pitch",  $tune.ui.aimPitch,  -90 ... 90)
                 vec("OpenXR grip pivot", $tune.ui.gripPivot)
                 vec("OpenXR grip offset", $tune.ui.gripPos)
+            }
+            Divider()
+            Group {
+                Text("Tracked hands (saved for this game; the left hand mirrors the right)")
+                    .font(.caption).foregroundStyle(.secondary)
+                deg("Hand rotation X", $tune.ui.handRot.x, -90 ... 90)
+                deg("Hand rotation Y", $tune.ui.handRot.y, -90 ... 90)
+                deg("Hand rotation Z", $tune.ui.handRot.z, -90 ... 90)
+                vec("Hand offset", $tune.ui.handPos)
             }
             Divider()
             HStack {

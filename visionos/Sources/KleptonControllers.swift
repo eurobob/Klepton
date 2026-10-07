@@ -207,29 +207,27 @@ private let klGripFromWrist: [simd_quatf] = {
 /// grip pose does not put the saber where a Quest player's muscle memory
 /// expects. One device run per candidate angle, with no rebuild between them.
 private struct KLHandTune {
-    var rot = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-    /// 4 cm out along the hilt axis by default (`-Z`, the direction the blade
-    /// leaves the fist). The metacarpal midpoint is where the hand *holds* the
-    /// hilt, which is not where a Touch controller's tracked origin sits — the
-    /// controller extends past the fist — so a hilt pinned to the palm reads as
-    /// sliding back down its own pointing ray. Directionally right, not gripped
-    /// right. `KL_HAND_POS` replaces this outright.
-    var pos = SIMD3<Float>(0, 0, -0.04)
+    var rot: simd_quatf
+    var pos: SIMD3<Float>
 
-    /// Indexed by hand: 0 = left, 1 = right.
-    static let shared: [KLHandTune] = [make(0), make(1)]
+    /// Per-hand overrides from `KL_HAND_ROT_L`/`_R` and `KL_HAND_POS_L`/`_R`,
+    /// for a half-wrong basis that one mirrored set cannot express. nil means
+    /// the hand follows the panel's shared set (KleptonTuning, which also reads
+    /// the shared `KL_HAND_ROT`/`KL_HAND_POS`).
+    static let perHand: [KLHandTune?] = [make(0), make(1)]
 
-    private static func make(_ hand: Int) -> KLHandTune {
-        var t = KLHandTune()
-        if let (d, k) = klEnvTriple("KL_HAND_ROT", hand) {
-            t.rot = klEulerXYZ(d)
-            NSLog("[cp] \(k): hand \(hand) extra grip rotation \(d) degrees")
+    private static func make(_ hand: Int) -> KLHandTune? {
+        let env = ProcessInfo.processInfo.environment
+        let suffix = hand == 0 ? "_L" : "_R"
+        func triple(_ key: String) -> SIMD3<Float>? {
+            guard let text = env[key + suffix] else { return nil }
+            let f = text.split(separator: ",").compactMap { Float($0.trimmingCharacters(in: .whitespaces)) }
+            return f.count == 3 ? SIMD3(f[0], f[1], f[2]) : nil
         }
-        if let (p, k) = klEnvTriple("KL_HAND_POS", hand) {
-            t.pos = p
-            NSLog("[cp] \(k): hand \(hand) extra grip offset \(p) m")
-        }
-        return t
+        let rot = triple("KL_HAND_ROT"), pos = triple("KL_HAND_POS")
+        guard rot != nil || pos != nil else { return nil }
+        NSLog("[cp] KL_HAND_*\(suffix): hand \(hand) rot \(rot ?? .zero) deg, pos \(pos ?? SIMD3(0, 0, -0.04)) m")
+        return KLHandTune(rot: klEulerXYZ(rot ?? .zero), pos: pos ?? SIMD3(0, 0, -0.04))
     }
 }
 
@@ -773,12 +771,21 @@ final class KleptonControllers {
                         + "prediction; lower it to shorten the horizon")))
     }
 
-    /// Apply the KL_HAND_ROT / KL_HAND_POS tuning, in the grip's own frame.
+    /// Apply the hand tuning, in the grip's own frame: the panel's live set
+    /// (right hand as given, left hand mirrored), or a per-hand override.
     private static func tuned(_ p: SIMD3<Float>, _ q: simd_quatf,
                               hand: Int) -> (SIMD3<Float>, simd_quatf) {
-        let t = KLHandTune.shared[hand]
-        let q2 = q * t.rot
-        return (p + q2.act(t.pos), q2)
+        let rot: simd_quatf, pos: SIMD3<Float>
+        if let t = KLHandTune.perHand[hand] {
+            rot = t.rot; pos = t.pos
+        } else {
+            let live = KleptonTuning.shared.snapshot()
+            let r = live.handRot, o = live.handPos
+            rot = klEulerXYZ(hand == 0 ? SIMD3(r.x, -r.y, -r.z) : r)
+            pos = hand == 0 ? SIMD3(-o.x, o.y, o.z) : o
+        }
+        let q2 = q * rot
+        return (p + q2.act(pos), q2)
     }
 
 
